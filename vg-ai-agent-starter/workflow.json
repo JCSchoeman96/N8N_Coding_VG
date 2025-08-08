@@ -1,8 +1,0 @@
-{
-  "name": "VG AI Coding Agent - Full (RAG + WP Tests + PR)",
-  "nodes": [/* SNIPPET: insert the full workflow JSON you pasted earlier here. 
-    For file size and clarity, this starter includes a trimmed skeleton.
-    Replace this file with your customized full JSON from Chat and re-import in n8n. */],
-  "connections": {},
-  "settings": {"saveExecutionProgress":"DEFAULT","executionOrder":"v1"}
-}

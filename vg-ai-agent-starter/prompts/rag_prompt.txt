@@ -1,4 +1,0 @@
-Use the following retrieved context to improve the solution.
-Only include relevant snippets; avoid duplication.
-Context:
-{{context}}
