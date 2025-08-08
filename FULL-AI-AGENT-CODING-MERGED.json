@@ -1,0 +1,1043 @@
+{
+  "name": "VG AI Coding Agent - Full (RAG + WP Tests + PR)",
+  "nodes": [
+    {
+      "parameters": {
+        "path": "vg-ai-agent",
+        "options": {
+          "responseCode": 200
+        }
+      },
+      "id": "Webhook_In",
+      "name": "1) Webhook In (Idea/Spec)",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 1,
+      "position": [
+        260,
+        -40
+      ],
+      "webhookId": "vg-ai-agent"
+    },
+    {
+      "parameters": {
+        "keepOnlySet": true,
+        "values": {
+          "string": [
+            {
+              "name": "job_id",
+              "value": "VG-{{$now}}-{{$randomNumber(1000,9999)}}"
+            },
+            {
+              "name": "goal",
+              "value": "={{$json.body.goal || $json.goal || 'Build WooCommerce \u201cBuy Now\u201d button plugin'}}"
+            },
+            {
+              "name": "stack",
+              "value": "php,js,css,wordpress,woocommerce"
+            },
+            {
+              "name": "acceptance",
+              "value": "passes phpunit; phpstan lvl>=6; PSR12; activates; no fatals"
+            },
+            {
+              "name": "dry_run",
+              "value": "={{$json.body.dry_run ?? 'true'}}"
+            },
+            {
+              "name": "qdrant_collection",
+              "value": "vg_knowledge"
+            },
+            {
+              "name": "gh_owner",
+              "value": "JCSchoeman96"
+            },
+            {
+              "name": "gh_repo",
+              "value": "voelgoed_agent_repo"
+            },
+            {
+              "name": "branch",
+              "value": "={{`feature-${$json.job_id}`}}"
+            }
+          ]
+        }
+      },
+      "id": "Init_Context",
+      "name": "2) Init Context",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 2,
+      "position": [
+        520,
+        -40
+      ]
+    },
+    {
+      "parameters": {
+        "functionCode": "const redact=(s='')=>s.replace(/sk-[A-Za-z0-9_-]{20,}/g,'[REDACTED]').replace(/(password|secret|token)[:=\\s]+[^\\s]+/gi,'$1:[REDACTED]');\nconst out={...$json}; out.goal=redact(out.goal||''); return [out];"
+      },
+      "id": "Secret_Scrubber",
+      "name": "3) Secret Scrubber",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 2,
+      "position": [
+        760,
+        -40
+      ]
+    },
+    {
+      "parameters": {
+        "functionCode": "const t=($json.goal||'').toLowerCase(); const bad=/ignore previous|exfiltrate|disable guard|system prompt/gi.test(t); return [{...$json,injection_flag:bad}];"
+      },
+      "id": "Prompt_Injection_Guard",
+      "name": "4) Prompt-Injection Guard",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 2,
+      "position": [
+        1000,
+        -40
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "boolean": [
+            {
+              "value1": "={{$json.injection_flag}}"
+            }
+          ]
+        }
+      },
+      "id": "IF_Injection",
+      "name": "IF Injection?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [
+        1220,
+        -40
+      ]
+    },
+    {
+      "parameters": {
+        "respond": true,
+        "responseCode": 400,
+        "responseBody": "{\"status\":\"blocked\",\"reason\":\"prompt injection detected\"}"
+      },
+      "id": "Reject_Injection",
+      "name": "Reject & Respond",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1,
+      "position": [
+        1460,
+        -140
+      ]
+    },
+    {
+      "parameters": {
+        "functionCode": "const src=$json.source_html||''; const text=src\n  .replace(/<script[\\s\\S]*?<\\/script>/gi,' ')\n  .replace(/<style[\\s\\S]*?<\\/style>/gi,' ')\n  .replace(/<[^>]+>/g,' ')\n  .replace(/\\s+/g,' ') \n  .trim();\nreturn [{...$json, markdown:text}];"
+      },
+      "id": "SimpleMarkdown",
+      "name": "5) HTML \u2192 Simple Markdown (fallback)",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 2,
+      "position": [
+        1460,
+        60
+      ],
+      "notes": "If you have a Turndown microservice, replace this with an HTTP Request to that endpoint."
+    },
+    {
+      "parameters": {
+        "functionCode": "const text=($json.markdown||'').trim(); const size=1200; const chunks=[]; for(let i=0;i<text.length;i+=size){chunks.push({chunk:text.slice(i,i+size), idx:Math.floor(i/size)});} return chunks.map(c=>({json:{...$json,chunk:c.chunk,chunk_idx:c.idx}}));"
+      },
+      "id": "Chunker",
+      "name": "6) Token-aware Chunker",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 2,
+      "position": [
+        1700,
+        60
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "json",
+        "jsonParameters": true,
+        "options": {}
+      },
+      "id": "Qdrant_Upsert",
+      "name": "7) Qdrant Upsert (RAG Index)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [
+        1940,
+        60
+      ],
+      "notes": "POST http://<QDRANT_HOST>:6333/collections/{{qdrant_collection}}/points with vectors+payload",
+      "credentials": {}
+    },
+    {
+      "parameters": {
+        "functionCode": "return [{json:{query:($json.goal||''), top_k:8}}];"
+      },
+      "id": "Build_Search",
+      "name": "8) Build RAG Search",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 2,
+      "position": [
+        1460,
+        240
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "json",
+        "jsonParameters": true
+      },
+      "id": "Qdrant_Search",
+      "name": "9) Qdrant Search (RAG Retrieval)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [
+        1700,
+        240
+      ],
+      "notes": "POST /collections/{{qdrant_collection}}/points/search with vector or using search API"
+    },
+    {
+      "parameters": {
+        "functionCode": "const refs = ($json.result || $json.matches || $json.points || []);\nconst ctx = refs.map(r=> (r.payload?.chunk) || r.payload?.text || r.text || '').filter(Boolean).slice(0,6).join('\\n---\\n');\nreturn [{...$json, rag_context: ctx}];"
+      },
+      "id": "Assemble_Context",
+      "name": "10) Assemble RAG Context",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 2,
+      "position": [
+        1940,
+        240
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "chat",
+        "chatPrompt": "You are a senior WordPress/WooCommerce engineer and prompt formatter. Normalize and expand the following goal into a complete coding spec, including: requirements, hooks, file map, test plan, acceptance criteria. Use this context if helpful:\n\nGoal:\n{{$json.goal}}\n\nContext:\n{{$json.rag_context}}\n\nReturn JSON with keys: curated_prompt, scaffold_plan (array), risks (array).",
+        "options": {
+          "model": "gpt-4o-mini"
+        }
+      },
+      "id": "Prompt_Enhancer",
+      "name": "11) Prompt Enhancer (cheap LLM or local)",
+      "type": "n8n-nodes-base.openAi",
+      "typeVersion": 3,
+      "position": [
+        2180,
+        100
+      ],
+      "credentials": {
+        "openAiApi": {
+          "id": "openai-cred-id",
+          "name": "OpenAI API"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "boolean": [
+            {
+              "value1": "={{$json.dry_run === 'true' || $json.dry_run === true}}"
+            }
+          ]
+        }
+      },
+      "id": "IF_DryRun_1",
+      "name": "IF Dry Run?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [
+        2400,
+        100
+      ]
+    },
+    {
+      "parameters": {
+        "functionCode": "return [{json:{files:[{path:'src/plugin.php',content:\"<?php\\n/** Plugin Name: VG Agent Demo */\\n\"},{path:'tests/phpunit/SampleTest.php',content:\"<?php\\nclass SampleTest extends \\\\PHPUnit\\\\Framework\\\\TestCase{public function testTrue(){ $this->assertTrue(true);} }\"}], notes:'dry-run mock'}}];"
+      },
+      "id": "Mock_First_Draft",
+      "name": "Mock First Draft (dry)",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 2,
+      "position": [
+        2620,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "chat",
+        "chatPrompt": "You are a senior WP/Woo engineer. Using this curated spec, output a FIRST DRAFT plugin as JSON: { files:[{path,content}], notes }.\n\nSpec:\n{{$json.data || $json.curated_prompt}}",
+        "options": {
+          "model": "gpt-4o-mini"
+        }
+      },
+      "id": "First_Draft_Codegen",
+      "name": "12) First Draft Codegen (cheap LLM/local)",
+      "type": "n8n-nodes-base.openAi",
+      "typeVersion": 3,
+      "position": [
+        2620,
+        200
+      ],
+      "credentials": {
+        "openAiApi": {
+          "id": "openai-cred-id",
+          "name": "OpenAI API"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "functionCode": "const path=require('path'); const base=`/data/jobs/${$json.job_id}`; const files=($json.files||[]).map(f=>({json:{...f,abs:path.join(base,f.path)}})); return files.length?files:[{json:{path:'src/plugin.php',content:'<?php // empty'}}];"
+      },
+      "id": "Expand_Files",
+      "name": "13) Expand Files",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 2,
+      "position": [
+        2860,
+        100
+      ]
+    },
+    {
+      "parameters": {
+        "fileName": "={{`/data/jobs/${$json.job_id}/${$json.path}`}}",
+        "fileContent": "={{$json.content}}"
+      },
+      "id": "Write_Files",
+      "name": "14) Write Files",
+      "type": "n8n-nodes-base.writeBinaryFile",
+      "typeVersion": 1,
+      "position": [
+        3100,
+        100
+      ]
+    },
+    {
+      "parameters": {
+        "command": "bash -lc \"cd /data/jobs/{{$json.job_id}} && npx prettier --write '**/*.{js,css,md,json}' || true && php-cs-fixer fix || true\"",
+        "options": {
+          "output": "json"
+        }
+      },
+      "id": "Formatters",
+      "name": "15) Formatters (Prettier / PHP-CS-Fixer)",
+      "type": "n8n-nodes-base.executeCommand",
+      "typeVersion": 1,
+      "position": [
+        3340,
+        100
+      ]
+    },
+    {
+      "parameters": {
+        "command": "bash -lc \"cd /data/jobs/{{$json.job_id}} && wp-env stop || true && wp-env start && mkdir -p wp-content/plugins/agent-plugin && rsync -a ./ wp-content/plugins/agent-plugin/ --exclude 'node_modules' --exclude '.git' && wp-env run phpunit && vendor/bin/phpstan analyse --error-format=table || true && vendor/bin/phpcs --standard=PSR12 || true && npm ci --ignore-scripts || true && npx eslint . || true && npx stylelint '**/*.css' || true\"",
+        "options": {
+          "output": "json",
+          "maxBuffer": 50
+        }
+      },
+      "id": "WP_Lab_Tests",
+      "name": "16) WP Test Lab (phpunit/stan/phpcs/eslint/stylelint)",
+      "type": "n8n-nodes-base.executeCommand",
+      "typeVersion": 1,
+      "position": [
+        3580,
+        100
+      ]
+    },
+    {
+      "parameters": {
+        "functionCode": "const out=$json.stdout||''; const failed=/FAIL|ERROR|Fatal error|\\b\\d+\\s+failures?\\b/i.test(out); return [{...$json,test_failed:failed,test_stdout:out.substring(0,5000)}];"
+      },
+      "id": "Parse_Test",
+      "name": "17) Parse Test Output",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 2,
+      "position": [
+        3820,
+        100
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "boolean": [
+            {
+              "value1": "={{$json.test_failed}}"
+            }
+          ]
+        }
+      },
+      "id": "IF_Tests_Failed",
+      "name": "IF Tests Failed?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [
+        4060,
+        100
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "chat",
+        "chatPrompt": "You are a senior WP engineer. Given code (assume repository files in /data/jobs/{{$json.job_id}}) and failing logs below, produce minimal unified DIFF patches to fix failures and improve tests.\n\nLogs (truncated):\n{{$json.test_stdout}}\n\nConstraints: PHP 8.2+, WP 6.5+, PSR12, phpstan>=6.\nReturn ONLY patch blocks.",
+        "options": {
+          "model": "gpt-4o"
+        }
+      },
+      "id": "Refactor_Fix",
+      "name": "18) Refactor & Fix (GPT-4o/4.1)",
+      "type": "n8n-nodes-base.openAi",
+      "typeVersion": 3,
+      "position": [
+        4300,
+        -40
+      ],
+      "credentials": {
+        "openAiApi": {
+          "id": "openai-cred-id",
+          "name": "OpenAI API"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "command": "bash -lc \"cd /data/jobs/{{$json.job_id}} && echo \\\"{{$json.data}}\\\" > patches.diff && git init && git add . && git commit -m 'pre-patch' && git apply --whitespace=fix patches.diff && git add -A && git commit -m 'ai patch' || true\"",
+        "options": {
+          "output": "json"
+        }
+      },
+      "id": "Apply_Patch",
+      "name": "19) Apply Patch",
+      "type": "n8n-nodes-base.executeCommand",
+      "typeVersion": 1,
+      "position": [
+        4540,
+        -40
+      ]
+    },
+    {
+      "parameters": {
+        "command": "bash -lc \"cd /data/jobs/{{$json.job_id}} && wp-env stop || true && wp-env start && rsync -a ./ wp-content/plugins/agent-plugin/ --exclude 'node_modules' --exclude '.git' && wp-env run phpunit && vendor/bin/phpstan analyse --error-format=table || true && vendor/bin/phpcs --standard=PSR12 || true && npx eslint . || true && npx stylelint '**/*.css' || true\"",
+        "options": {
+          "output": "json",
+          "maxBuffer": 50
+        }
+      },
+      "id": "Retest",
+      "name": "20) Retest After Patch",
+      "type": "n8n-nodes-base.executeCommand",
+      "typeVersion": 1,
+      "position": [
+        4780,
+        -40
+      ]
+    },
+    {
+      "parameters": {
+        "functionCode": "const out=$json.stdout||''; const failed=/FAIL|ERROR|Fatal error|\\b\\d+\\s+failures?\\b/i.test(out); return [{...$json,test_failed:failed,test_stdout:out.substring(0,5000)}];"
+      },
+      "id": "Parse_Retest",
+      "name": "21) Parse Retest",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 2,
+      "position": [
+        5020,
+        -40
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "boolean": [
+            {
+              "value1": "={{$json.test_failed}}"
+            }
+          ]
+        }
+      },
+      "id": "IF_Still_Failing",
+      "name": "IF Still Failing?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [
+        5260,
+        -40
+      ]
+    },
+    {
+      "parameters": {
+        "command": "bash -lc \"cd /data/jobs/{{$json.job_id}} && zip -r artifact.zip . -x 'node_modules/*' '.git/*' '*wp-env*' || true\"",
+        "options": {
+          "output": "json"
+        }
+      },
+      "id": "Zip_Artifact",
+      "name": "22) Zip Artifact",
+      "type": "n8n-nodes-base.executeCommand",
+      "typeVersion": 1,
+      "position": [
+        4300,
+        240
+      ]
+    },
+    {
+      "parameters": {
+        "repository": "={{$json.gh_repo}}",
+        "owner": "={{$json.gh_owner}}",
+        "additionalFields": {
+          "initializeWithReadme": true,
+          "privateRepo": true
+        }
+      },
+      "id": "Ensure_Repo",
+      "name": "23) Ensure GitHub Repo",
+      "type": "n8n-nodes-base.github",
+      "typeVersion": 2,
+      "position": [
+        4540,
+        240
+      ],
+      "credentials": {
+        "githubApi": {
+          "id": "github-cred-id",
+          "name": "GitHub API"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "owner": "={{$json.gh_owner}}",
+        "repository": "={{$json.gh_repo}}",
+        "branch": "={{$json.branch}}",
+        "filePath": "artifact.zip",
+        "binaryData": true
+      },
+      "id": "Upload_Artifact",
+      "name": "24) Upload Artifact",
+      "type": "n8n-nodes-base.github",
+      "typeVersion": 2,
+      "position": [
+        4780,
+        240
+      ],
+      "credentials": {
+        "githubApi": {
+          "id": "github-cred-id",
+          "name": "GitHub API"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "owner": "={{$json.gh_owner}}",
+        "repository": "={{$json.gh_repo}}",
+        "title": "={{`feat: ${$json.goal}`}}",
+        "body": "Automated PR from VG AI Agent. Includes tests + CI.\\n\\nAcceptance: {{$json.acceptance}}",
+        "head": "={{$json.branch}}",
+        "base": "main"
+      },
+      "id": "Open_PR",
+      "name": "25) Open Pull Request",
+      "type": "n8n-nodes-base.github",
+      "typeVersion": 2,
+      "position": [
+        5020,
+        240
+      ],
+      "credentials": {
+        "githubApi": {
+          "id": "github-cred-id",
+          "name": "GitHub API"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "fromEmail": "",
+        "toEmail": "you@voelgoed.co.za",
+        "subject": "VG AI Agent: {{$json.job_id}} {{ $json.test_failed ? 'FAILED' : 'PASSED' }}",
+        "text": "Goal: {{$json.goal}}\\nStatus: {{ $json.test_failed ? 'Needs attention' : 'Ready (PR opened)' }}\\nLogs (first 5k chars):\\n{{$json.test_stdout}}"
+      },
+      "id": "Notify_Email",
+      "name": "26) Notify (Email)",
+      "type": "n8n-nodes-base.emailSend",
+      "typeVersion": 2,
+      "position": [
+        5260,
+        240
+      ]
+    },
+    {
+      "parameters": {
+        "functionCode": "const prev = global.vg_cost || 0; const estTokens = 8000; const estCost = estTokens/1e6*10; global.vg_cost = prev + estCost; return [{...$json, est_tokens: estTokens, cost_total: global.vg_cost}];"
+      },
+      "id": "Cost_Meter",
+      "name": "27) Cost Meter (est.)",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 2,
+      "position": [
+        2180,
+        -80
+      ]
+    },
+    {
+      "parameters": {
+        "respond": true,
+        "responseBody": "{\"status\":\"accepted\",\"job_id\":\"{{$json.job_id}}\"}",
+        "responseCode": 200
+      },
+      "id": "Webhook_Reply",
+      "name": "Respond to Caller",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1,
+      "position": [
+        2400,
+        -80
+      ]
+    },
+    {
+      "parameters": {},
+      "id": "16_openai",
+      "name": "Embed to OpenAI",
+      "type": "n8n-nodes-base.httpRequest"
+    },
+    {
+      "parameters": {},
+      "id": "17_openai",
+      "name": "Store to OpenAI Vector Store",
+      "type": "n8n-nodes-base.httpRequest"
+    },
+    {
+      "parameters": {},
+      "id": "18_openai",
+      "name": "Merge Vector Results",
+      "type": "n8n-nodes-base.merge"
+    }
+  ],
+  "connections": {
+    "1) Webhook In (Idea/Spec)": {
+      "main": [
+        [
+          {
+            "node": "2) Init Context",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "2) Init Context": {
+      "main": [
+        [
+          {
+            "node": "3) Secret Scrubber",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "3) Secret Scrubber": {
+      "main": [
+        [
+          {
+            "node": "4) Prompt-Injection Guard",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "4) Prompt-Injection Guard": {
+      "main": [
+        [
+          {
+            "node": "IF Injection?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "IF Injection?": {
+      "main": [
+        [
+          {
+            "node": "Reject & Respond",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "5) HTML \u2192 Simple Markdown (fallback)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "5) HTML \u2192 Simple Markdown (fallback)": {
+      "main": [
+        [
+          {
+            "node": "6) Token-aware Chunker",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "6) Token-aware Chunker": {
+      "main": [
+        [
+          {
+            "node": "7) Qdrant Upsert (RAG Index)",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Embed to OpenAI",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "7) Qdrant Upsert (RAG Index)": {
+      "main": [
+        [
+          {
+            "node": "8) Build RAG Search",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "8) Build RAG Search": {
+      "main": [
+        [
+          {
+            "node": "9) Qdrant Search (RAG Retrieval)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "9) Qdrant Search (RAG Retrieval)": {
+      "main": [
+        [
+          {
+            "node": "10) Assemble RAG Context",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "10) Assemble RAG Context": {
+      "main": [
+        [
+          {
+            "node": "11) Prompt Enhancer (cheap LLM or local)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "11) Prompt Enhancer (cheap LLM or local)": {
+      "main": [
+        [
+          {
+            "node": "27) Cost Meter (est.)",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "IF Dry Run?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "27) Cost Meter (est.)": {
+      "main": [
+        [
+          {
+            "node": "Respond to Caller",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "IF Dry Run?": {
+      "main": [
+        [
+          {
+            "node": "Mock First Draft (dry)",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "12) First Draft Codegen (cheap LLM/local)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Mock First Draft (dry)": {
+      "main": [
+        [
+          {
+            "node": "13) Expand Files",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "12) First Draft Codegen (cheap LLM/local)": {
+      "main": [
+        [
+          {
+            "node": "13) Expand Files",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "13) Expand Files": {
+      "main": [
+        [
+          {
+            "node": "14) Write Files",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "14) Write Files": {
+      "main": [
+        [
+          {
+            "node": "15) Formatters (Prettier / PHP-CS-Fixer)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "15) Formatters (Prettier / PHP-CS-Fixer)": {
+      "main": [
+        [
+          {
+            "node": "16) WP Test Lab (phpunit/stan/phpcs/eslint/stylelint)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "16) WP Test Lab (phpunit/stan/phpcs/eslint/stylelint)": {
+      "main": [
+        [
+          {
+            "node": "17) Parse Test Output",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "17) Parse Test Output": {
+      "main": [
+        [
+          {
+            "node": "IF Tests Failed?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "IF Tests Failed?": {
+      "main": [
+        [
+          {
+            "node": "18) Refactor & Fix (GPT-4o/4.1)",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "22) Zip Artifact",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "18) Refactor & Fix (GPT-4o/4.1)": {
+      "main": [
+        [
+          {
+            "node": "19) Apply Patch",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "19) Apply Patch": {
+      "main": [
+        [
+          {
+            "node": "20) Retest After Patch",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "20) Retest After Patch": {
+      "main": [
+        [
+          {
+            "node": "21) Parse Retest",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "21) Parse Retest": {
+      "main": [
+        [
+          {
+            "node": "IF Still Failing?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "IF Still Failing?": {
+      "main": [
+        [
+          {
+            "node": "18) Refactor & Fix (GPT-4o/4.1)",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "22) Zip Artifact",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "22) Zip Artifact": {
+      "main": [
+        [
+          {
+            "node": "23) Ensure GitHub Repo",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "23) Ensure GitHub Repo": {
+      "main": [
+        [
+          {
+            "node": "24) Upload Artifact",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "24) Upload Artifact": {
+      "main": [
+        [
+          {
+            "node": "25) Open Pull Request",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "25) Open Pull Request": {
+      "main": [
+        [
+          {
+            "node": "26) Notify (Email)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Embed to OpenAI": [
+      [
+        {
+          "node": "Store to OpenAI Vector Store",
+          "type": "main",
+          "index": 0
+        }
+      ]
+    ],
+    "Store to OpenAI Vector Store": [
+      [
+        {
+          "node": "Merge Vector Results",
+          "type": "main",
+          "index": 0
+        }
+      ]
+    ],
+    "Merge Vector Results": [
+      [
+        {
+          "node": "11) Prompt Enhancer (cheap LLM or local)",
+          "type": "main",
+          "index": 0
+        }
+      ]
+    ]
+  },
+  "settings": {
+    "saveExecutionProgress": "DEFAULT",
+    "executionOrder": "v1"
+  },
+  "pinData": {},
+  "staticData": {}
+}

@@ -1,0 +1,7 @@
+parameters:
+  level: 6
+  paths:
+    - plugin-folder
+  inferPrivatePropertyTypeFromConstructor: true
+  checkMissingIterableValueType: true
+  treatPhpDocTypesAsCertain: false
