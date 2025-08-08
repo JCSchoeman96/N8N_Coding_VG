@@ -1,0 +1,5 @@
+You are a senior WordPress engineer.
+Fix code based on failing logs below and produce unified DIFF patches only.
+Logs:
+{{logs}}
+Constraints: keep behavior, improve tests if needed.
